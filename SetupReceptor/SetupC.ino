@@ -2,8 +2,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
 
 // Configurações WiFi
 const char* ssid = "";
@@ -12,23 +10,15 @@ const char* password = "";
 // Configurações Firebase
 const char* firebaseUrl = "";
 
-// Configurações Google Sheets
-const char* googleScriptUrl = "";
-
 // Variáveis para LoRa
 String loraBuffer = "";
 unsigned long lastReceiveTime = 0;
 const unsigned int receiveTimeout = 1000;
 
-// NTP Client para obter hora atual
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", -3 * 3600, 60000); // UTC-3 (Brasília)
-
 WiFiClientSecure espClient;
 
-// Variáveis para armazenar status dos envios
+// Variável para armazenar status do envio
 String fbStatus = "";
-String gsStatus = "";
 
 void setup_wifi() {
   Serial.begin(9600);
@@ -49,68 +39,10 @@ void setup_wifi() {
   Serial.println("\nWiFi conectado");
   Serial.print("IP: ");
   Serial.println(WiFi.localIP());
-
-  // Inicializa NTP Client
-  timeClient.begin();
-  timeClient.update();
-}
-
-// Função para obter data e hora formatadas (YYYY-MM-DD HH:MM:SS)
-String getFormattedDateTime() {
-  timeClient.update();
-  unsigned long epochTime = timeClient.getEpochTime();
-  struct tm *ptm = gmtime((time_t *)&epochTime);
-
-  int year = ptm->tm_year + 1900;
-  int month = ptm->tm_mon + 1;
-  int day = ptm->tm_mday;
-  int hour = timeClient.getHours();
-  int minutes = timeClient.getMinutes();
-  int seconds = timeClient.getSeconds();
-
-  char datetime[20];
-  snprintf(datetime, sizeof(datetime), "%04d-%02d-%02d %02d:%02d:%02d",
-           year, month, day, hour, minutes, seconds);
-
-  return String(datetime);
-}
-
-// Função para enviar dados para Google Sheets
-void sendToGoogleSheets(String valorPuro, String timestamp, String originalPayload) {
-  if (WiFi.status() != WL_CONNECTED) {
-    gsStatus = "[GS] WiFi desconectado";
-    return;
-  }
-
-  HTTPClient http;
-  espClient.setInsecure();
-  espClient.setTimeout(15000);
-
-  String url = String(googleScriptUrl) +
-               "?timestamp=" + URLEncode(timestamp) +
-               "&nivel=" + URLEncode(valorPuro) +
-               "&payload=" + URLEncode(originalPayload);
-
-  if (http.begin(espClient, url)) {
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(15000);
-
-    int httpResponseCode = http.GET();
-
-    if (httpResponseCode > 0) {
-      gsStatus = "[GS] OK (" + String(httpResponseCode) + ")";
-    } else {
-      gsStatus = "[GS] Erro: " + String(httpResponseCode);
-    }
-
-    http.end();
-  } else {
-    gsStatus = "[GS] Falha na conexão";
-  }
 }
 
 // Função para enviar para Firebase
-void sendToFirebase(String valorPuro, String timestamp, String originalPayload) {
+void sendToFirebase(String valorPuro, String originalPayload) {
   if (WiFi.status() != WL_CONNECTED) {
     fbStatus = "[FB] WiFi desconectado";
     return;
@@ -127,7 +59,6 @@ void sendToFirebase(String valorPuro, String timestamp, String originalPayload) 
     DynamicJsonDocument firebaseDoc(512);
     firebaseDoc["nivel"] = valorPuro;
     firebaseDoc["topic"] = "nivel-rio";
-    firebaseDoc["timestamp"] = timestamp;
     firebaseDoc["originalPayload"] = originalPayload;
 
     String firebasePayload;
@@ -145,24 +76,6 @@ void sendToFirebase(String valorPuro, String timestamp, String originalPayload) 
   } else {
     fbStatus = "[FB] Falha na conexão";
   }
-}
-
-// Função para codificar URL
-String URLEncode(String input) {
-  String encoded = "";
-  for (int i = 0; i < input.length(); i++) {
-    char c = input.charAt(i);
-    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-      encoded += c;
-    } else if (c == ' ') {
-      encoded += '+';
-    } else {
-      encoded += '%';
-      if (c < 16) encoded += '0';
-      encoded += String(c, HEX);
-    }
-  }
-  return encoded;
 }
 
 // Função para extrair valor numérico
@@ -199,12 +112,9 @@ void processLoraData(String data) {
   }
 
   String conteudo = data.substring(5);
-  String timestamp = getFormattedDateTime();
 
-  // Mostra no Serial com horário
-  Serial.print("[");
-  Serial.print(timestamp);
-  Serial.print("] Recebido via B: ");
+  // Mostra no Serial
+  Serial.print("Recebido via B: ");
   Serial.println(conteudo);
 
   String valorPuro = extractNumericValue(conteudo);
@@ -216,17 +126,13 @@ void processLoraData(String data) {
   Serial.print("[Valor] ");
   Serial.println(valorPuro);
 
-  // Reseta os status
+  // Reseta o status
   fbStatus = "";
-  gsStatus = "";
 
   // Envia para Firebase
-  sendToFirebase(valorPuro, timestamp, conteudo);
+  sendToFirebase(valorPuro, conteudo);
 
-  // Envia para Google Sheets
-  sendToGoogleSheets(valorPuro, timestamp, conteudo);
-
-  Serial.println(fbStatus + " " + gsStatus);
+  Serial.println(fbStatus);
   Serial.println("----");
 }
 
@@ -264,7 +170,4 @@ void loop() {
     }
     lastWifiCheck = millis();
   }
-
-  // Atualiza o horário periodicamente
-  timeClient.update();
 }
